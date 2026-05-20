@@ -423,7 +423,7 @@ float MM_accel[3]{};
 
 #if USE_GYRO
 #if 1 < ((USE_L3G4200D) + (USE_MPU9250_GYRO) + (USE_ICM20948_GYRO))
-#error: Múltiplos gisroscópios definidos
+#error: Múltiplos giroscópios definidos
 #elif USE_L3G4200D
 #include "src/lib/L3G4200D/L3G4200D.h" // Gyroscope L3G4200D
 L3G4200D giro(2000);							//Gyroscope object declaration
@@ -510,10 +510,46 @@ Helpful LRutil;								//Declaration of helpful object to telemetry system
 #define LoRa_CHAN 0x37
 
 #include "LoRa_E32.h"
+#include <EEPROM.h>
+
+uint16_t LoRaEEAddress = 0x0; // Atualizar este valor no setup
+Configuration configLoRa;
+
+struct LoRaEEConfig{
+	Configuration configuration;
+	uint16_t checkSum = 0;
+};
 
 LoRa_E32 LoRaConfig(&LoRa, byte(AUX_LORA_PIN), byte(M0_LORA_PIN), byte(M1_LORA_PIN), UART_BPS_RATE(LoRaBaudRate));
 
-void LoRaSetConfig()
+uint16_t calcCheckSum(const Configuration& configuration)
+{
+	uint16_t sum = 0;
+	const byte* p = (const byte*)&configuration;
+	for (size_t i = 0; i < sizeof(Configuration); i++) {
+		sum += p[i];
+	}
+	return sum;
+}
+
+void loadLoRaDefaultConfig()
+{
+	configLoRa.ADDL = LoRa_ADDL;
+	configLoRa.ADDH = LoRa_ADDH;
+	configLoRa.CHAN = LoRa_CHAN;
+
+	// configLoRa.OPTION.fec = FEC_0_OFF;
+	// configLoRa.OPTION.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
+	// configLoRa.OPTION.ioDriveMode = IO_D_MODE_PUSH_PULLS_PULL_UPS;
+	// configLoRa.OPTION.transmissionPower = POWER_17;
+	// configLoRa.OPTION.wirelessWakeupTime = WAKE_UP_1250;
+
+	// configLoRa.SPED.airDataRate = AIR_DATA_RATE_011_48;
+	// configLoRa.SPED.uartBaudRate = UART_BPS_9600;
+	// configLoRa.SPED.uartParity = MODE_00_8N1;
+}
+
+bool setLoRaConfig()
 {
 	ResponseStructContainer c = LoRaConfig.getConfiguration();
 	// It's important get configuration pointer before all other operation
@@ -521,20 +557,22 @@ void LoRaSetConfig()
 	Serial.println(c.status.getResponseDescription());
 	Serial.println(c.status.code);
 
+	if(c.status.code != E32_SUCCESS) return false;
+
 	//   printParameters(configuration);
-	configuration.ADDL = LoRa_ADDL;
-	configuration.ADDH = LoRa_ADDH;
-	configuration.CHAN = LoRa_CHAN;
+	configuration.ADDL = configLoRa.ADDL;
+	configuration.ADDH = configLoRa.ADDH;
+	configuration.CHAN = configLoRa.CHAN;
 
-	// configuration.OPTION.fec = FEC_0_OFF;
-	// configuration.OPTION.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
-	// configuration.OPTION.ioDriveMode = IO_D_MODE_PUSH_PULLS_PULL_UPS;
-	// configuration.OPTION.transmissionPower = POWER_17;
-	// configuration.OPTION.wirelessWakeupTime = WAKE_UP_1250;
+	// configuration.OPTION.fec = configLoRa.OPTION.fec;
+	// configuration.OPTION.fixedTransmission = configLoRa.OPTION.fixedTransmission;
+	// configuration.OPTION.ioDriveMode = configLoRa.OPTION.ioDriveMode;
+	// configuration.OPTION.transmissionPower = configLoRa.OPTION.transmissionPower;
+	// configuration.OPTION.wirelessWakeupTime = configLoRa.OPTION.wirelessWakeupTime;
 
-	// configuration.SPED.airDataRate = AIR_DATA_RATE_011_48;
-	// configuration.SPED.uartBaudRate = UART_BPS_9600;
-	// configuration.SPED.uartParity = MODE_00_8N1;
+	// configuration.SPED.airDataRate = configLoRa.SPED.airDataRate;
+	// configuration.SPED.uartBaudRate = configLoRa.SPED.uartBaudRate;
+	// configuration.SPED.uartParity = configLoRa.SPED.uartParity;
 
 	// Set configuration changed and set to not hold the configuration
 	ResponseStatus rs = LoRaConfig.setConfiguration(configuration, WRITE_CFG_PWR_DWN_SAVE);
@@ -542,7 +580,151 @@ void LoRaSetConfig()
 	Serial.println(rs.code);
 	//   printParameters(configuration);
 	c.close();
+
+	return rs.code == E32_SUCCESS;
 }
+
+bool getLoRaConfig()
+{
+	ResponseStructContainer c = LoRaConfig.getConfiguration();
+	// It's important get configuration pointer before all other operation
+	if(c.status.code != E32_SUCCESS) return false;
+
+	configLoRa = *(Configuration*)c.data;
+
+	c.close();
+
+	return true;
+}
+
+void saveLoRaEEConfig(){
+	LoRaEEConfig loRaEEAux;
+	loRaEEAux.configuration = configLoRa;
+	loRaEEAux.checkSum = calcCheckSum(configLoRa);
+	EEPROM.put(LoRaEEAddress, loRaEEAux);
+	#if defined(ARDUINO_ARCH_ESP32)
+	EEPROM.commit();
+	#endif // defined(ARDUINO_ARCH_ESP32)
+}
+
+bool loadLoRaEEConfig() {
+	LoRaEEConfig loRaEEAux;
+	EEPROM.get(LoRaEEAddress, loRaEEAux);
+
+	uint16_t sum = calcCheckSum(loRaEEAux.configuration);
+
+	if((sum == loRaEEAux.checkSum) && (loRaEEAux.configuration.HEAD == 0xC0 || loRaEEAux.configuration.HEAD == 0xC2))
+	{
+		configLoRa = loRaEEAux.configuration;
+		return true;
+	}
+	return false;
+
+}
+
+
+
+void updateLoRaFrequency(){
+	if(LoRa.available() <= 10) return; // Arrumar esse valor
+
+	String recieved = LoRa.readStringUntil('\n');
+	// String recieved = "";
+	// while(LoRa.available())
+	// {
+	// 	recieved.concat(LoRa.read());
+	// }
+
+	Configuration previousConfig = configLoRa; // Pré carrega com configuração anterior
+
+	if(getLoRaConfig())
+	{
+		previousConfig = configLoRa; // Carrega com configuração que estava no modulo
+	}
+
+	// processar solicitação recebida
+	// quebrar pacote
+
+	// interpretar configurações
+	int ADDL = 0; // ...
+	int ADDH = 0; // ...
+	int CHAN = 0; // ...
+
+	// Montar pacote de resposta
+	//...
+
+	// Enviar pacote de resposta
+	LoRa.println("???");
+
+	// Aguardar 5 segundos pela confirmação
+	unsigned long temp = millis();
+	while (LoRa.available() < 10)
+	{
+		if (temp + 5000 < millis()) break; // Return talvez?
+	}
+
+	// recebe confirmação
+	recieved = LoRa.readStringUntil('\n');
+
+	// Responde confirmação
+	LoRa.println("???");
+
+	// Atualiza frequência
+	configLoRa.ADDL = ADDL;
+	configLoRa.ADDH = ADDH;
+	configLoRa.CHAN = CHAN;
+
+	// configLoRa.OPTION.fec = FEC_0_OFF;
+	// configLoRa.OPTION.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
+	// configLoRa.OPTION.ioDriveMode = IO_D_MODE_PUSH_PULLS_PULL_UPS;
+	// configLoRa.OPTION.transmissionPower = POWER_17;
+	// configLoRa.OPTION.wirelessWakeupTime = WAKE_UP_1250;
+
+	// configLoRa.SPED.airDataRate = AIR_DATA_RATE_011_48;
+	// configLoRa.SPED.uartBaudRate = UART_BPS_9600;
+	// configLoRa.SPED.uartParity = MODE_00_8N1;
+
+	if(setLoRaConfig())
+	{
+		saveLoRaEEConfig();
+	}
+	else
+	{
+		// Caso de erro na configuração
+	}
+
+
+
+	delay(2000); // Aguarda 1 segundo para GS atualizar frequencia
+
+	temp = millis();
+	while (LoRa.available() < 10)
+	{
+		if (temp + 5000 < millis()) break; // Return talvez?
+	}
+
+	// recebe confirmação
+	recieved = LoRa.readStringUntil('\n');
+
+	// Responde confirmação
+	LoRa.println("???");
+
+	temp = millis();
+	while (LoRa.available() < 10)
+	{
+		if (temp + 5000 < millis()) break; // Return talvez?
+	}
+
+	// recebe confirmação
+	recieved = LoRa.readStringUntil('\n');
+
+	// if(...) // Se der problema, reverte
+	// {
+	// 	configLoRa = previousConfig;
+	// 	setLoRaConfig();
+	// }
+
+}
+
 
 #endif //USE_LoRa_E32_settable
 #endif // USE_LoRa_E32
@@ -721,21 +903,32 @@ void setup()
 #endif // BEEPING
 
 #if LoRamode
-#if USE_LoRa_E32_settable
-	LoRaConfig.begin();
-	LoRaSetConfig();
-#else
-#if USE_LoRa_E32
-	pinMode(M0_LORA_PIN,OUTPUT); digitalWrite(M0_LORA_PIN,LOW);
-	pinMode(M1_LORA_PIN,OUTPUT); digitalWrite(M1_LORA_PIN,LOW);
-#endif // USE_LoRa_E32
+
 #ifdef ARDUINO_ARCH_ESP32
 	LoRa.begin(LoRaBaudRate, SERIAL_8N1, RX_LORA_ESP, TX_LORA_ESP);
 #else
 	LoRa.begin(LoRaBaudRate);
 #endif // ARDUINO_ARCH_ESP32
-#endif // LoRamode
+
+#if USE_LoRa_E32
+#if USE_LoRa_E32_settable
+
+	LoRaConfig.begin();
+
+	#if (USE_LoRa_E32_settable) && (ApoGee)
+	LoRaEEAddress = apg.getEEAddress() + sizeof(float);
+	if(LoRaEEAddress + sizeof(LoRaEEConfig) >= EEPROM.length()) LoRaEEAddress = 0;
+	#endif // (USE_LoRa_E32_settable) && (ApoGee)
+
+	loadLoRaDefaultConfig();
+	setLoRaConfig();
+#else
+	pinMode(M0_LORA_PIN,OUTPUT); digitalWrite(M0_LORA_PIN,LOW);
+	pinMode(M1_LORA_PIN,OUTPUT); digitalWrite(M1_LORA_PIN,LOW);
 #endif  // USE_LoRa_E32_settable
+#endif // USE_LoRa_E32
+
+#endif // LoRamode
 
 #if GPSmode
 	GpS.begin();
@@ -801,7 +994,30 @@ void setup()
 
 #if LoRamode
 #if ApoGee
+		// When system gets a invalid zero height (reset on flight)
 		if(apg.getFixZero()) {
+
+			#if USE_LoRa_E32_settable
+			LoRa.print(F("(Using EEPROM LoRa settings: ADD < 0x"));
+			LoRa.print(configLoRa.ADDH, HEX);
+			LoRa.print(configLoRa.ADDL, HEX);
+			LoRa.print(F(" > CHAN < 0x"));
+			LoRa.print(configLoRa.CHAN, HEX);
+			LoRa.print(F(" > Ref @ < 0x "));
+			LoRa.print(LoRaEEAddress, HEX);
+			LoRa.print(F(" >)! "));
+
+			if(loadLoRaEEConfig())
+			{
+				setLoRaConfig();
+				LoRa.println(F("Success!"));
+			}
+			else
+			{
+				LoRa.println(F("Fail, using default LoRa settings"));
+			}
+			#endif // USE_LoRa_E32_settable
+
 			LoRa.print(F("(Using EEPROM Zero Ref @ < 0x"));
 			LoRa.print(apg.getEEAddress(), HEX);
 			LoRa.print(F(" >!) "));

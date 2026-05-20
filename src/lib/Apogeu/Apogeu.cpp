@@ -50,6 +50,9 @@ bool Apogeu::fixZero(float maxRange)
 		usingFixZero = true;
 	} else if(!eeValid || (abs(eeBase - base) >= maxRange)){
 		EEPROM.put(eeAddress, base);
+		#if defined(ARDUINO_ARCH_ESP32)
+		EEPROM.commit();
+		#endif // defined(ARDUINO_ARCH_ESP32)
 	}
 
 	return usingFixZero;
