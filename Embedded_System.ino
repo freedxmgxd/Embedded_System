@@ -86,7 +86,7 @@
 #define USE_LoRa_DORJI (LoRamode && defined(BOARD_HAS_LoRa_DORJI))		// Dorji LoRa Module (2019 and before)
 #define USE_LoRa_E32 (LoRamode && defined(BOARD_HAS_LoRa_E32))		// E32 LoRa Module (2019 and before)
 
-#define USE_LoRa_E32_settable (USE_LoRa_E32 && 0)
+#define USE_LoRa_E32_settable (USE_LoRa_E32 && 1)
 
 #define USE_LoRa_KEYVALUE (LoRamode && 1)	// Send LoRa data Using Key-value pair
 
@@ -622,17 +622,84 @@ bool loadLoRaEEConfig() {
 
 }
 
+#define RX_CHG_FREQ_REQ_HEAD "MUD4R_FR3Q_"
+							//	ADDH / ADDL
+#define RX_CHG_FREQ_REQ_MID "_CH4N_"
+							// CHAN
+#define RX_CHG_FREQ_REQ_TAIL "_PFV"
 
+#define TX_CHG_FREQ_CONFIRM_HEAD "CTZ_FR3Q_"
+							// ADDH / ADDL
+#define TX_CHG_FREQ_CONFIRM_MID "_CH4N_"
+							//	CHAN
+#define TX_CHG_FREQ_CONFIRM_TAIL "_MSM"
+
+#define RX_CHG_FREQ_OK "1SSO_MSM"
+
+#define RX_CHG_FREQ_VRFY "MUD0U_MSM"
+
+#define TX_CHG_FREQ_RESP "JUR0_JUR4D1NH0"
+
+#define RX_CHG_FREQ_FINAL "B04"
+
+const char chgFreqReqHead[] = RX_CHG_FREQ_REQ_HEAD;
+constexpr size_t chgFreqReqHeadLen = sizeof(chgFreqReqHead);
+
+const char chgFreqReqMid[] = RX_CHG_FREQ_REQ_MID;
+constexpr size_t chgFreqReqMidLen = sizeof(chgFreqReqMid);
+
+const char chgFreqReqTail[] = RX_CHG_FREQ_REQ_TAIL;
+constexpr size_t chgFreqReqTailLen = sizeof(chgFreqReqTail);
+
+constexpr size_t chgFreqReqLen = chgFreqReqHeadLen + 4 + chgFreqReqMidLen + 2 + chgFreqReqTailLen;
+
+const char chgFreqCfmHead[] = TX_CHG_FREQ_CONFIRM_HEAD;
+constexpr size_t chgFreqCfmHeadLen = sizeof(chgFreqCfmHead);
+
+const char chgFreqCfmMid[] = TX_CHG_FREQ_CONFIRM_MID;
+constexpr size_t chgFreqCfmMidLen = sizeof(chgFreqCfmMid);
+
+const char chgFreqCfmTail[] = TX_CHG_FREQ_CONFIRM_TAIL;
+constexpr size_t chgFreqCfmTailLen = sizeof(chgFreqCfmTail);
+
+constexpr size_t chgFreqCfmLen = chgFreqCfmHeadLen + 4 + chgFreqCfmMidLen + 2 + chgFreqCfmTailLen;
+
+const char chgFreqOk[] = RX_CHG_FREQ_OK;
+constexpr size_t chgFreqOkLen = sizeof(chgFreqOk);
+
+const char chgFreqVrfy[] = RX_CHG_FREQ_VRFY;
+constexpr size_t chgFreqVrfyLen = sizeof(chgFreqVrfy);
+
+const char chgFreqFinal[] = RX_CHG_FREQ_FINAL;
+constexpr size_t chgFreqFinalLen = sizeof(chgFreqFinal);
+
+inline uint8_t asciiHex2Nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return 0;
+}
+
+uint8_t nibble2AsciiHex(byte val){
+	if (val < 10) return '0' + val;
+	return 'A' + (val - 10);
+}
+
+uint8_t hexFromCharPair(const char* ptr) {
+  return (asciiHex2Nibble(ptr[0]) << 4) | asciiHex2Nibble(ptr[1]);
+}
+
+void embedHexByte(char* target, byte val) {
+  target[0] = nibble2AsciiHex(val >> 4);
+  target[1] = nibble2AsciiHex(val & 0x0F);
+}
 
 void updateLoRaFrequency(){
-	if(LoRa.available() <= 10) return; // Arrumar esse valor
+	if(LoRa.available() < chgFreqReqLen) return;
 
-	String recieved = LoRa.readStringUntil('\n');
-	// String recieved = "";
-	// while(LoRa.available())
-	// {
-	// 	recieved.concat(LoRa.read());
-	// }
+	char recieved[chgFreqReqLen + 1] = {};
+	uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqReqLen);
+	recieved[count] = '\0';
 
 	Configuration previousConfig = configLoRa; // Pré carrega com configuração anterior
 
@@ -642,31 +709,50 @@ void updateLoRaFrequency(){
 	}
 
 	// processar solicitação recebida
-	// quebrar pacote
+	bool reqCheck = true;
+	reqCheck &= (strncmp(recieved, chgFreqReqHead, chgFreqReqHeadLen) == 0);
+	if(!reqCheck) return;
+	// Pula a Head e o ADD
+	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 4, chgFreqReqMid, chgFreqReqMidLen) == 0);
+	if(!reqCheck) return;
+	// Pula a Head, o ADD, o Mid e o CHAN
+	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 4 + chgFreqReqMidLen + 2, chgFreqReqTail, chgFreqReqTailLen) == 0);
+	if(!reqCheck) return;
 
+	// quebrar pacote
 	// interpretar configurações
-	int ADDL = 0; // ...
-	int ADDH = 0; // ...
-	int CHAN = 0; // ...
+	int ADDH = hexFromCharPair(recieved + chgFreqReqHeadLen); // ...
+	int ADDL = hexFromCharPair(recieved + chgFreqReqHeadLen + 2); // ...
+	int CHAN = hexFromCharPair(recieved + chgFreqReqHeadLen + 4 + chgFreqReqMidLen); // ...
 
 	// Montar pacote de resposta
-	//...
+	char toSend[chgFreqCfmLen + 1] = {};
+	memcpy(toSend, chgFreqCfmHead, chgFreqCfmHeadLen);
+	embedHexByte(toSend + chgFreqCfmHeadLen, ADDH);
+	embedHexByte(toSend + chgFreqCfmHeadLen + 2, ADDL);
+	memcpy(toSend + chgFreqCfmHeadLen + 4, chgFreqCfmMid, chgFreqCfmMidLen);
+	embedHexByte(toSend + chgFreqCfmHeadLen + 4 + chgFreqCfmMidLen, CHAN);
+	memcpy(toSend + chgFreqCfmHeadLen + 4 + chgFreqCfmMidLen + 2, chgFreqCfmTail, chgFreqCfmTailLen);
+	toSend[chgFreqCfmLen] = '\0';
 
 	// Enviar pacote de resposta
-	LoRa.println("???");
+	LoRa.println(toSend);
 
 	// Aguardar 5 segundos pela confirmação
 	unsigned long temp = millis();
-	while (LoRa.available() < 10)
+	while (LoRa.available() < chgFreqOkLen)
 	{
 		if (temp + 5000 < millis()) break; // Return talvez?
 	}
 
 	// recebe confirmação
-	recieved = LoRa.readStringUntil('\n');
+	count = LoRa.readBytesUntil('\n', recieved, chgFreqOkLen);
+	recieved[count] = '\0';
+	// recieved = LoRa.readStringUntil('\n');
+	reqCheck = true;
+	reqCheck &= (strncmp(recieved, chgFreqReqHead, chgFreqOkLen) == 0);
+	if(!reqCheck) return;
 
-	// Responde confirmação
-	LoRa.println("???");
 
 	// Atualiza frequência
 	configLoRa.ADDL = ADDL;
@@ -696,26 +782,33 @@ void updateLoRaFrequency(){
 
 	delay(2000); // Aguarda 1 segundo para GS atualizar frequencia
 
+
 	temp = millis();
-	while (LoRa.available() < 10)
+	while (LoRa.available() < chgFreqVrfyLen)
 	{
 		if (temp + 5000 < millis()) break; // Return talvez?
 	}
 
 	// recebe confirmação
 	recieved = LoRa.readStringUntil('\n');
+	// recieved = LoRa.readStringUntil('\n');
+	reqCheck = true;
+	reqCheck &= (strncmp(recieved, chgFreqVrfy, chgFreqVrfyLen) == 0);
+	if(!reqCheck) return;
 
 	// Responde confirmação
-	LoRa.println("???");
 
 	temp = millis();
-	while (LoRa.available() < 10)
 	{
 		if (temp + 5000 < millis()) break; // Return talvez?
 	}
 
 	// recebe confirmação
 	recieved = LoRa.readStringUntil('\n');
+	// recieved = LoRa.readStringUntil('\n');
+	reqCheck = true;
+	reqCheck &= (strncmp(recieved, chgFreqFinal, chgFreqFinalLen) == 0);
+	if(!reqCheck) return;
 
 	// if(...) // Se der problema, reverte
 	// {
@@ -1591,6 +1684,10 @@ inline void WaitUntilFlight(float minHeight)
 {
 	do
 	{
+		#if USE_LoRa_E32_settable
+		updateLoRaFrequency();
+		#endif // USE_LoRa_E32_settable
+
 		WaitUntil();
 
 #if MORSE_MSG
