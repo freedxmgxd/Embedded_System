@@ -44,13 +44,13 @@
 
 #define USE_GY80 (0)						//Use GY80 module
 #define USE_GY91 (0)						//Use GY91 module
-#define USE_GY912 (0)						//Use GY912 module
+#define USE_GY912 (1)						//Use GY912 module
 
-#define SDCard (0)							//Use SD card
-#define GPSmode (0)							//Use GPS
+#define SDCard (1)							//Use SD card
+#define GPSmode (1)							//Use GPS
 #define LoRamode (1)						//Serial mode for transmission on LoRa module
 #define TalkingBoard (0)					//When two boards are connected for redundancy system
-#define BuZZ (1)							//Buzzer mode
+#define BuZZ (0)							//Buzzer mode
 #define ForceSysC (0)
 
 #define PRINT (1)							//Print or not things on Serial
@@ -505,9 +505,9 @@ Helpful LRutil;								//Declaration of helpful object to telemetry system
 #if USE_LoRa_E32_settable
 
 #define FREQUENCY_900
-#define LoRa_ADDL 0x17
+#define LoRa_ADDL 0x2A // 42 decimal (Standardized)
 #define LoRa_ADDH 0x00
-#define LoRa_CHAN 0x37
+#define LoRa_CHAN 0x2A // 42 decimal (904 - 862)
 
 #include "LoRa_E32.h"
 #include <EEPROM.h>
@@ -564,13 +564,13 @@ bool setLoRaConfig()
 	configuration.ADDH = configLoRa.ADDH;
 	configuration.CHAN = configLoRa.CHAN;
 
-	// configuration.OPTION.fec = configLoRa.OPTION.fec;
-	// configuration.OPTION.fixedTransmission = configLoRa.OPTION.fixedTransmission;
-	// configuration.OPTION.ioDriveMode = configLoRa.OPTION.ioDriveMode;
-	// configuration.OPTION.transmissionPower = configLoRa.OPTION.transmissionPower;
-	// configuration.OPTION.wirelessWakeupTime = configLoRa.OPTION.wirelessWakeupTime;
+	configuration.OPTION.fec = FEC_1_ON;
+	configuration.OPTION.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
+	configuration.OPTION.ioDriveMode = IO_D_MODE_PUSH_PULLS_PULL_UPS;
+	configuration.OPTION.transmissionPower = POWER_20;
+	configuration.OPTION.wirelessWakeupTime = WAKE_UP_250;
 
-	// configuration.SPED.airDataRate = configLoRa.SPED.airDataRate;
+	configuration.SPED.airDataRate = AIR_DATA_RATE_101_192;
 	// configuration.SPED.uartBaudRate = configLoRa.SPED.uartBaudRate;
 	// configuration.SPED.uartParity = configLoRa.SPED.uartParity;
 
@@ -645,35 +645,35 @@ bool loadLoRaEEConfig() {
 #define TX_CHG_FREQ_ERROR "N4N4N1N4N40"
 
 const char chgFreqReqHead[] = RX_CHG_FREQ_REQ_HEAD;
-constexpr size_t chgFreqReqHeadLen = sizeof(chgFreqReqHead);
+constexpr size_t chgFreqReqHeadLen = sizeof(chgFreqReqHead) - 1;
 
 const char chgFreqReqMid[] = RX_CHG_FREQ_REQ_MID;
-constexpr size_t chgFreqReqMidLen = sizeof(chgFreqReqMid);
+constexpr size_t chgFreqReqMidLen = sizeof(chgFreqReqMid) - 1;
 
 const char chgFreqReqTail[] = RX_CHG_FREQ_REQ_TAIL;
-constexpr size_t chgFreqReqTailLen = sizeof(chgFreqReqTail);
+constexpr size_t chgFreqReqTailLen = sizeof(chgFreqReqTail) - 1;
 
 constexpr size_t chgFreqReqLen = chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 4 + chgFreqReqTailLen;
 
 const char chgFreqCfmHead[] = TX_CHG_FREQ_CONFIRM_HEAD;
-constexpr size_t chgFreqCfmHeadLen = sizeof(chgFreqCfmHead);
+constexpr size_t chgFreqCfmHeadLen = sizeof(chgFreqCfmHead) - 1;
 
 const char chgFreqCfmMid[] = TX_CHG_FREQ_CONFIRM_MID;
-constexpr size_t chgFreqCfmMidLen = sizeof(chgFreqCfmMid);
+constexpr size_t chgFreqCfmMidLen = sizeof(chgFreqCfmMid) - 1;
 
 const char chgFreqCfmTail[] = TX_CHG_FREQ_CONFIRM_TAIL;
-constexpr size_t chgFreqCfmTailLen = sizeof(chgFreqCfmTail);
+constexpr size_t chgFreqCfmTailLen = sizeof(chgFreqCfmTail) - 1;
 
 constexpr size_t chgFreqCfmLen = chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 4 + chgFreqCfmTailLen;
 
 const char chgFreqOk[] = RX_CHG_FREQ_OK;
-constexpr size_t chgFreqOkLen = sizeof(chgFreqOk);
+constexpr size_t chgFreqOkLen = sizeof(chgFreqOk) - 1;
 
 const char chgFreqVrfy[] = RX_CHG_FREQ_VRFY;
-constexpr size_t chgFreqVrfyLen = sizeof(chgFreqVrfy);
+constexpr size_t chgFreqVrfyLen = sizeof(chgFreqVrfy) - 1;
 
 const char chgFreqFinal[] = RX_CHG_FREQ_FINAL;
-constexpr size_t chgFreqFinalLen = sizeof(chgFreqFinal);
+constexpr size_t chgFreqFinalLen = sizeof(chgFreqFinal) - 1;
 
 inline uint8_t asciiHex2Nibble(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -696,9 +696,12 @@ void embedHexByte(char* target, byte val) {
   target[1] = nibble2AsciiHex(val & 0x0F);
 }
 
+unsigned long pauseTelemetryUntil = 0;
+
 void cancelLoRaConfig(bool reverter, Configuration &previousConfig)
 {
 	LoRa.println(TX_CHG_FREQ_ERROR);
+	Serial.println(F("[LORA RX] ERRO: Handshake abortado ou configuracao invalida!"));
 
 	if(reverter){
 		configLoRa = previousConfig;
@@ -708,11 +711,61 @@ void cancelLoRaConfig(bool reverter, Configuration &previousConfig)
 }
 
 void updateLoRaFrequency(){
-	if(LoRa.available() < chgFreqReqLen) return;
+	while(LoRa.available() > 0 && LoRa.peek() != 'M') {
+		LoRa.read();
+	}
+
+	if (LoRa.available() > 0 && LoRa.peek() == 'M') {
+		// Wait up to 100ms for the full 27-byte packet to arrive
+		unsigned long startWait = millis();
+		while (LoRa.available() < chgFreqReqLen && (millis() - startWait < 100)) {
+			delay(1);
+		}
+
+		if (LoRa.available() < chgFreqReqLen) {
+			// Discard 'M' if packet is incomplete to prevent blocking the buffer
+			Serial.print(F("[LORA RX] Bytes insuficientes ou invalido: "));
+			Serial.print(LoRa.available());
+			Serial.println(F(" / 27. Descartando 'M'"));
+			LoRa.read();
+			return;
+		}
+	} else {
+		return;
+	}
+
+	extern unsigned long pauseTelemetryUntil;
+	pauseTelemetryUntil = millis() + 15000; // Pause telemetry for 15s
 
 	char recieved[chgFreqReqLen + 1] = {};
 	uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqReqLen);
 	recieved[count] = '\0';
+
+	// [LORA RX DEBUG]
+	Serial.println(F("\n========== [LORA RX] =========="));
+	Serial.print(F("[LORA RX] Mensagem recebida: "));
+	Serial.println(recieved);
+	Serial.print(F("[LORA RX] Bytes lidos: "));
+	Serial.println(count);
+	Serial.print(F("[LORA RX] Bytes em HEX: "));
+	for(uint8_t i = 0; i < count; i++) {
+		Serial.print(F("0x"));
+		if((uint8_t)recieved[i] < 16) Serial.print(F("0"));
+		Serial.print((uint8_t)recieved[i], HEX);
+		Serial.print(F(" "));
+	}
+	Serial.println();
+	Serial.print(F("[LORA RX] Bytes em ASCII: "));
+	for(uint8_t i = 0; i < count; i++) {
+		char c = recieved[i];
+		if(c >= 32 && c <= 126) {
+			Serial.print(c);
+		} else {
+			Serial.print('.');
+		}
+		Serial.print(F(" "));
+	}
+	Serial.println();
 
 	Configuration previousConfig = configLoRa; // Pré carrega com configuração anterior
 
@@ -724,51 +777,77 @@ void updateLoRaFrequency(){
 	// processar solicitação recebida
 	bool reqCheck = true;
 	reqCheck &= (strncmp(recieved, chgFreqReqHead, chgFreqReqHeadLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(false, previousConfig);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Header invalido")); return cancelLoRaConfig(false, previousConfig); }
 	// Pula a Head e o CHAN
 	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 2, chgFreqReqMid, chgFreqReqMidLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(false, previousConfig);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Separador invalido")); return cancelLoRaConfig(false, previousConfig); }
 	// Pula a Head, o CHAN, o Mid e o ADD
 	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 4, chgFreqReqTail, chgFreqReqTailLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(false, previousConfig);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Tail invalido")); return cancelLoRaConfig(false, previousConfig); }
 
 	// quebrar pacote
-	// interpretar configurações
-	int CHAN = hexFromCharPair(recieved + chgFreqReqHeadLen); // ...
+	// interpretar configurações (as decimal!)
+	int CHAN = (recieved[chgFreqReqHeadLen] - '0') * 10 + (recieved[chgFreqReqHeadLen + 1] - '0');
 
-	if(CHAN > 0x45) return cancelLoRaConfig(false, previousConfig); // Canal invalido
+	if(CHAN > 69) { Serial.println(F("[LORA RX] ERRO: Canal invalido")); return cancelLoRaConfig(false, previousConfig); }
 
 	int ADDH = hexFromCharPair(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen); // ...
 	int ADDL = hexFromCharPair(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 2); // ...
 
-	// Montar pacote de resposta
+	Serial.print(F("[LORA RX] Parse OK! CHAN="));
+	Serial.print(CHAN, DEC);
+	Serial.print(F(" ADDH=0x"));
+	Serial.print(ADDH, HEX);
+	Serial.print(F(" ADDL=0x"));
+	Serial.println(ADDL, HEX);
+
+	// Montar pacote de resposta in decimal
 	char toSend[chgFreqCfmLen + 1] = {};
 	memcpy(toSend, chgFreqCfmHead, chgFreqCfmHeadLen);
-	embedHexByte(toSend + chgFreqCfmHeadLen, CHAN);
+	toSend[chgFreqCfmHeadLen] = (CHAN / 10) + '0';
+	toSend[chgFreqCfmHeadLen + 1] = (CHAN % 10) + '0';
 	memcpy(toSend + chgFreqCfmHeadLen + 2, chgFreqCfmMid, chgFreqCfmMidLen);
 	embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen, ADDH);
 	embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 2, ADDL);
 	memcpy(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 4, chgFreqCfmTail, chgFreqCfmTailLen);
 	toSend[chgFreqCfmLen] = '\0';
 
-	// Enviar pacote de resposta
+	// Enviar pacote de resposta (flushing transient byte first)
+	Serial.print(F("[LORA RX] Enviando confirmacao: "));
+	Serial.println(toSend);
+	delay(50);
+	while(LoRa.available() > 0) LoRa.read();
 	LoRa.println(toSend);
 
 	// Aguardar 5 segundos pela confirmação
+	Serial.println(F("[LORA RX] Aguardando 1SSO_MSM do GS..."));
 	unsigned long temp = millis();
-	while (LoRa.available() < chgFreqOkLen)
+	while (true)
 	{
-		if (temp + 5000 < millis()) return cancelLoRaConfig(false, previousConfig); // Return talvez?
+		while (LoRa.available() > 0 && LoRa.peek() != '1')
+		{
+			LoRa.read();
+		}
+		if (LoRa.available() >= chgFreqOkLen)
+		{
+			break;
+		}
+		if (temp + 5000 < millis())
+		{
+			Serial.println(F("[LORA RX] TIMEOUT aguardando 1SSO_MSM"));
+			return cancelLoRaConfig(false, previousConfig);
+		}
+		delay(1);
 	}
 
 	// recebe confirmação
 	count = LoRa.readBytesUntil('\n', recieved, chgFreqOkLen);
 	recieved[count] = '\0';
-	// recieved = LoRa.readStringUntil('\n');
+	Serial.print(F("[LORA RX] Recebeu: "));
+	Serial.println(recieved);
 	reqCheck = true;
-	reqCheck &= (strncmp(recieved, chgFreqReqHead, chgFreqOkLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(false, previousConfig);
-
+	reqCheck &= (strncmp(recieved, chgFreqOk, chgFreqOkLen) == 0);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: 1SSO_MSM invalido")); return cancelLoRaConfig(false, previousConfig); }
 
 	// Atualiza frequência
 	configLoRa.ADDL = ADDL;
@@ -788,47 +867,77 @@ void updateLoRaFrequency(){
 	if(setLoRaConfig()) // Tenta configurar
 	{
 		saveLoRaEEConfig();
+		Serial.println(F("[LORA RX] Frequencia aplicada. Aguardando MUD0U_MSM do GS..."));
 	}
 	else // Caso de erro na configuração
 	{
 		cancelLoRaConfig(true, previousConfig);
 	}
 
-
-
-	delay(2000); // Aguarda 2 segundos para GS atualizar frequencia
-
+	delay(50); // Aguarda para GS atualizar frequencia
 
 	temp = millis();
-	while (LoRa.available() < chgFreqVrfyLen)
+	while (true)
 	{
-		if (temp + 5000 < millis()) return cancelLoRaConfig(true, previousConfig); // Return talvez?
+		while (LoRa.available() > 0 && LoRa.peek() != 'M')
+		{
+			LoRa.read();
+		}
+		if (LoRa.available() >= chgFreqVrfyLen)
+		{
+			break;
+		}
+		if (temp + 5000 < millis())
+		{
+			Serial.println(F("[LORA RX] TIMEOUT aguardando MUD0U_MSM"));
+			return cancelLoRaConfig(true, previousConfig);
+		}
+		delay(1);
 	}
 
 	// recebe confirmação
 	count = LoRa.readBytesUntil('\n', recieved, chgFreqVrfyLen);
 	recieved[count] = '\0';
-	// recieved = LoRa.readStringUntil('\n');
+	Serial.print(F("[LORA RX] Recebeu: "));
+	Serial.println(recieved);
 	reqCheck = true;
 	reqCheck &= (strncmp(recieved, chgFreqVrfy, chgFreqVrfyLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(true, previousConfig);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: MUD0U_MSM invalido")); return cancelLoRaConfig(true, previousConfig); }
 
 	// Responde confirmação
+	Serial.println(F("[LORA RX] Enviando JUR0_JUR4D1NH0..."));
 	LoRa.println(TX_CHG_FREQ_RESP);
 
+	Serial.println(F("[LORA RX] Aguardando B04 do GS..."));
 	temp = millis();
-	while (LoRa.available() < chgFreqFinalLen)
+	while (true)
 	{
-		if (temp + 5000 < millis()) return cancelLoRaConfig(true, previousConfig); // Return talvez?
+		while (LoRa.available() > 0 && LoRa.peek() != 'B')
+		{
+			LoRa.read();
+		}
+		if (LoRa.available() >= chgFreqFinalLen)
+		{
+			break;
+		}
+		if (temp + 5000 < millis())
+		{
+			Serial.println(F("[LORA RX] TIMEOUT aguardando B04"));
+			return cancelLoRaConfig(true, previousConfig);
+		}
+		delay(1);
 	}
 
 	// recebe confirmação
 	count = LoRa.readBytesUntil('\n', recieved, chgFreqFinalLen);
 	recieved[count] = '\0';
-	// recieved = LoRa.readStringUntil('\n');
+	Serial.print(F("[LORA RX] Recebeu: "));
+	Serial.println(recieved);
 	reqCheck = true;
 	reqCheck &= (strncmp(recieved, chgFreqFinal, chgFreqFinalLen) == 0);
-	if(!reqCheck) return cancelLoRaConfig(true, previousConfig);
+	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: B04 invalido")); return cancelLoRaConfig(true, previousConfig); }
+
+	Serial.println(F("[LORA RX] Mudanca de frequencia concluida com sucesso!"));
 
 }
 
@@ -928,6 +1037,9 @@ template <typename T, typename R> void transmitln(T message, R value);
 #pragma region Setup
 void setup()
 {
+#if defined(ARDUINO_ARCH_ESP32)
+	EEPROM.begin(512);
+#endif
 #if PWMapg
 	pinMode(PWMout, OUTPUT);
 #endif // PWMapg
@@ -1028,6 +1140,7 @@ void setup()
 	#endif // (USE_LoRa_E32_settable) && (ApoGee)
 
 	loadLoRaDefaultConfig();
+	bool loRaEEValid = loadLoRaEEConfig();
 	setLoRaConfig();
 #else
 	pinMode(M0_LORA_PIN,OUTPUT); digitalWrite(M0_LORA_PIN,LOW);
@@ -1114,9 +1227,8 @@ void setup()
 			LoRa.print(LoRaEEAddress, HEX);
 			LoRa.print(F(" >)! "));
 
-			if(loadLoRaEEConfig())
+			if(loRaEEValid)
 			{
-				setLoRaConfig();
 				LoRa.println(F("Success!"));
 			}
 			else
@@ -2198,6 +2310,8 @@ inline void beep()
 #if LoRamode
 inline void LoRaSend()
 {
+	if (millis() < pauseTelemetryUntil) return;
+
 	/*
 	L - Line
 	T - Time
