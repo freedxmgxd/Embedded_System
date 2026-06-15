@@ -517,6 +517,7 @@ Configuration configLoRa;
 
 struct LoRaEEConfig{
 	Configuration configuration;
+	uint16_t compileHash = 0;
 	uint16_t checkSum = 0;
 };
 
@@ -601,9 +602,23 @@ bool getLoRaConfig()
 	return true;
 }
 
+uint16_t compileTimeHash() {
+	const char* date = __DATE__;
+	const char* time = __TIME__;
+	uint16_t hash = 0;
+	while (*date) {
+		hash = (hash << 5) - hash + *date++;
+	}
+	while (*time) {
+		hash = (hash << 5) - hash + *time++;
+	}
+	return hash;
+}
+
 void saveLoRaEEConfig(){
 	LoRaEEConfig loRaEEAux;
 	loRaEEAux.configuration = configLoRa;
+	loRaEEAux.compileHash = compileTimeHash();
 	loRaEEAux.checkSum = calcCheckSum(configLoRa);
 	EEPROM.put(LoRaEEAddress, loRaEEAux);
 	#if defined(ARDUINO_ARCH_ESP32)
@@ -617,13 +632,12 @@ bool loadLoRaEEConfig() {
 
 	uint16_t sum = calcCheckSum(loRaEEAux.configuration);
 
-	if((sum == loRaEEAux.checkSum) && (loRaEEAux.configuration.HEAD == 0xC0 || loRaEEAux.configuration.HEAD == 0xC2))
+	if((sum == loRaEEAux.checkSum) && (loRaEEAux.compileHash == compileTimeHash()) && (loRaEEAux.configuration.HEAD == 0xC0 || loRaEEAux.configuration.HEAD == 0xC2))
 	{
 		configLoRa = loRaEEAux.configuration;
 		return true;
 	}
 	return false;
-
 }
 
 #define RX_CHG_FREQ_REQ_HEAD "MUD4R_FR3Q_PFV.CH4N"
