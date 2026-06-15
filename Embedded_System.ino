@@ -50,7 +50,7 @@
 #define GPSmode (1)							//Use GPS
 #define LoRamode (1)						//Serial mode for transmission on LoRa module
 #define TalkingBoard (0)					//When two boards are connected for redundancy system
-#define BuZZ (0)							//Buzzer mode
+#define BuZZ (1)							//Buzzer mode
 #define ForceSysC (0)
 
 #define PRINT (1)							//Print or not things on Serial
@@ -554,8 +554,10 @@ bool setLoRaConfig()
 	ResponseStructContainer c = LoRaConfig.getConfiguration();
 	// It's important get configuration pointer before all other operation
 	Configuration configuration = *(Configuration*)c.data;
+#if PRINT
 	Serial.println(c.status.getResponseDescription());
 	Serial.println(c.status.code);
+#endif
 
 	if(c.status.code != E32_SUCCESS) return false;
 
@@ -576,8 +578,10 @@ bool setLoRaConfig()
 
 	// Set configuration changed and set to not hold the configuration
 	ResponseStatus rs = LoRaConfig.setConfiguration(configuration, WRITE_CFG_PWR_DWN_SAVE);
+#if PRINT
 	Serial.println(rs.getResponseDescription());
 	Serial.println(rs.code);
+#endif
 	//   printParameters(configuration);
 	c.close();
 
@@ -701,7 +705,9 @@ unsigned long pauseTelemetryUntil = 0;
 void cancelLoRaConfig(bool reverter, Configuration &previousConfig)
 {
 	LoRa.println(TX_CHG_FREQ_ERROR);
+#if PRINT
 	Serial.println(F("[LORA RX] ERRO: Handshake abortado ou configuracao invalida!"));
+#endif
 
 	if(reverter){
 		configLoRa = previousConfig;
@@ -710,235 +716,269 @@ void cancelLoRaConfig(bool reverter, Configuration &previousConfig)
 	}
 }
 
+enum HandshakeState {
+	HS_IDLE,
+	HS_WAITING_M_PACKET,
+	HS_WAITING_1SSO,
+	HS_WAITING_MUD0U,
+	HS_WAITING_B04
+};
+
 void updateLoRaFrequency(){
-	while(LoRa.available() > 0 && LoRa.peek() != 'M') {
-		LoRa.read();
-	}
+	static HandshakeState hsState = HS_IDLE;
+	static unsigned long stateTimeout = 0;
+	static unsigned long startWait = 0;
+	static Configuration previousConfig;
+	static int CHAN = LoRa_CHAN;
+	static int ADDH = LoRa_ADDH;
+	static int ADDL = LoRa_ADDL;
+	static char recieved[64] = {};
 
-	if (LoRa.available() > 0 && LoRa.peek() == 'M') {
-		// Wait up to 100ms for the full 27-byte packet to arrive
-		unsigned long startWait = millis();
-		while (LoRa.available() < chgFreqReqLen && (millis() - startWait < 100)) {
-			delay(1);
-		}
+	int discardLimit = 256; // Safety limit to prevent infinite loops on serial noise
 
-		if (LoRa.available() < chgFreqReqLen) {
-			// Discard 'M' if packet is incomplete to prevent blocking the buffer
-			Serial.print(F("[LORA RX] Bytes insuficientes ou invalido: "));
-			Serial.print(LoRa.available());
-			Serial.println(F(" / 27. Descartando 'M'"));
-			LoRa.read();
-			return;
-		}
-	} else {
-		return;
-	}
-
-	extern unsigned long pauseTelemetryUntil;
-	pauseTelemetryUntil = millis() + 15000; // Pause telemetry for 15s
-
-	char recieved[chgFreqReqLen + 1] = {};
-	uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqReqLen);
-	recieved[count] = '\0';
-
-	// [LORA RX DEBUG]
-	Serial.println(F("\n========== [LORA RX] =========="));
-	Serial.print(F("[LORA RX] Mensagem recebida: "));
-	Serial.println(recieved);
-	Serial.print(F("[LORA RX] Bytes lidos: "));
-	Serial.println(count);
-	Serial.print(F("[LORA RX] Bytes em HEX: "));
-	for(uint8_t i = 0; i < count; i++) {
-		Serial.print(F("0x"));
-		if((uint8_t)recieved[i] < 16) Serial.print(F("0"));
-		Serial.print((uint8_t)recieved[i], HEX);
-		Serial.print(F(" "));
-	}
-	Serial.println();
-	Serial.print(F("[LORA RX] Bytes em ASCII: "));
-	for(uint8_t i = 0; i < count; i++) {
-		char c = recieved[i];
-		if(c >= 32 && c <= 126) {
-			Serial.print(c);
-		} else {
-			Serial.print('.');
-		}
-		Serial.print(F(" "));
-	}
-	Serial.println();
-
-	Configuration previousConfig = configLoRa; // Pré carrega com configuração anterior
-
-	if(getLoRaConfig())
-	{
-		previousConfig = configLoRa; // Carrega com configuração que estava no modulo
-	}
-
-	// processar solicitação recebida
-	bool reqCheck = true;
-	reqCheck &= (strncmp(recieved, chgFreqReqHead, chgFreqReqHeadLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Header invalido")); return cancelLoRaConfig(false, previousConfig); }
-	// Pula a Head e o CHAN
-	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 2, chgFreqReqMid, chgFreqReqMidLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Separador invalido")); return cancelLoRaConfig(false, previousConfig); }
-	// Pula a Head, o CHAN, o Mid e o ADD
-	reqCheck &= (strncmp(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 4, chgFreqReqTail, chgFreqReqTailLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: Tail invalido")); return cancelLoRaConfig(false, previousConfig); }
-
-	// quebrar pacote
-	// interpretar configurações (as decimal!)
-	int CHAN = (recieved[chgFreqReqHeadLen] - '0') * 10 + (recieved[chgFreqReqHeadLen + 1] - '0');
-
-	if(CHAN > 69) { Serial.println(F("[LORA RX] ERRO: Canal invalido")); return cancelLoRaConfig(false, previousConfig); }
-
-	int ADDH = hexFromCharPair(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen); // ...
-	int ADDL = hexFromCharPair(recieved + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 2); // ...
-
-	Serial.print(F("[LORA RX] Parse OK! CHAN="));
-	Serial.print(CHAN, DEC);
-	Serial.print(F(" ADDH=0x"));
-	Serial.print(ADDH, HEX);
-	Serial.print(F(" ADDL=0x"));
-	Serial.println(ADDL, HEX);
-
-	// Montar pacote de resposta in decimal
-	char toSend[chgFreqCfmLen + 1] = {};
-	memcpy(toSend, chgFreqCfmHead, chgFreqCfmHeadLen);
-	toSend[chgFreqCfmHeadLen] = (CHAN / 10) + '0';
-	toSend[chgFreqCfmHeadLen + 1] = (CHAN % 10) + '0';
-	memcpy(toSend + chgFreqCfmHeadLen + 2, chgFreqCfmMid, chgFreqCfmMidLen);
-	embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen, ADDH);
-	embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 2, ADDL);
-	memcpy(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 4, chgFreqCfmTail, chgFreqCfmTailLen);
-	toSend[chgFreqCfmLen] = '\0';
-
-	// Enviar pacote de resposta (flushing transient byte first)
-	Serial.print(F("[LORA RX] Enviando confirmacao: "));
-	Serial.println(toSend);
-	delay(50);
-	while(LoRa.available() > 0) LoRa.read();
-	LoRa.println(toSend);
-
-	// Aguardar 5 segundos pela confirmação
-	Serial.println(F("[LORA RX] Aguardando 1SSO_MSM do GS..."));
-	unsigned long temp = millis();
-	while (true)
-	{
-		while (LoRa.available() > 0 && LoRa.peek() != '1')
-		{
-			LoRa.read();
-		}
-		if (LoRa.available() >= chgFreqOkLen)
-		{
+	switch (hsState) {
+		case HS_IDLE: {
+			if (LoRa.available() > 0) {
+				while (LoRa.available() > 0 && LoRa.peek() != 'M' && discardLimit-- > 0) {
+					LoRa.read();
+				}
+				if (LoRa.available() > 0 && LoRa.peek() == 'M') {
+					startWait = millis();
+					hsState = HS_WAITING_M_PACKET;
+				}
+			}
 			break;
 		}
-		if (temp + 5000 < millis())
-		{
-			Serial.println(F("[LORA RX] TIMEOUT aguardando 1SSO_MSM"));
-			return cancelLoRaConfig(false, previousConfig);
-		}
-		delay(1);
-	}
 
-	// recebe confirmação
-	count = LoRa.readBytesUntil('\n', recieved, chgFreqOkLen);
-	recieved[count] = '\0';
-	Serial.print(F("[LORA RX] Recebeu: "));
-	Serial.println(recieved);
-	reqCheck = true;
-	reqCheck &= (strncmp(recieved, chgFreqOk, chgFreqOkLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: 1SSO_MSM invalido")); return cancelLoRaConfig(false, previousConfig); }
+		case HS_WAITING_M_PACKET: {
+			if (LoRa.available() >= chgFreqReqLen) {
+				char tempRec[64] = {};
+				uint8_t count = LoRa.readBytesUntil('\n', tempRec, chgFreqReqLen);
+				tempRec[count] = '\0';
+				
+				// Pause telemetry for 15s
+				extern unsigned long pauseTelemetryUntil;
+				pauseTelemetryUntil = millis() + 15000;
 
-	// Atualiza frequência
-	configLoRa.ADDL = ADDL;
-	configLoRa.ADDH = ADDH;
-	configLoRa.CHAN = CHAN;
+#if PRINT
+				Serial.println(F("\n========== [LORA RX] =========="));
+				Serial.print(F("[LORA RX] Mensagem recebida: "));
+				Serial.println(tempRec);
+#endif
 
-	// configLoRa.OPTION.fec = FEC_0_OFF;
-	// configLoRa.OPTION.fixedTransmission = FT_TRANSPARENT_TRANSMISSION;
-	// configLoRa.OPTION.ioDriveMode = IO_D_MODE_PUSH_PULLS_PULL_UPS;
-	// configLoRa.OPTION.transmissionPower = POWER_17;
-	// configLoRa.OPTION.wirelessWakeupTime = WAKE_UP_1250;
+				if (getLoRaConfig()) {
+					previousConfig = configLoRa;
+				} else {
+					previousConfig = configLoRa;
+				}
 
-	// configLoRa.SPED.airDataRate = AIR_DATA_RATE_011_48;
-	// configLoRa.SPED.uartBaudRate = UART_BPS_9600;
-	// configLoRa.SPED.uartParity = MODE_00_8N1;
+				bool reqCheck = true;
+				reqCheck &= (strncmp(tempRec, chgFreqReqHead, chgFreqReqHeadLen) == 0);
+				if (reqCheck) {
+					reqCheck &= (strncmp(tempRec + chgFreqReqHeadLen + 2, chgFreqReqMid, chgFreqReqMidLen) == 0);
+				}
+				if (reqCheck) {
+					reqCheck &= (strncmp(tempRec + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 4, chgFreqReqTail, chgFreqReqTailLen) == 0);
+				}
 
-	if(setLoRaConfig()) // Tenta configurar
-	{
-		saveLoRaEEConfig();
-		Serial.println(F("[LORA RX] Frequencia aplicada. Aguardando MUD0U_MSM do GS..."));
-	}
-	else // Caso de erro na configuração
-	{
-		cancelLoRaConfig(true, previousConfig);
-	}
+				if (!reqCheck) {
+#if PRINT
+					Serial.println(F("[LORA RX] ERRO: Header/Separador/Tail invalido"));
+#endif
+					cancelLoRaConfig(false, previousConfig);
+					hsState = HS_IDLE;
+					break;
+				}
 
-	delay(50); // Aguarda para GS atualizar frequencia
+				CHAN = (tempRec[chgFreqReqHeadLen] - '0') * 10 + (tempRec[chgFreqReqHeadLen + 1] - '0');
+				if (CHAN > 69) {
+#if PRINT
+					Serial.println(F("[LORA RX] ERRO: Canal invalido"));
+#endif
+					cancelLoRaConfig(false, previousConfig);
+					hsState = HS_IDLE;
+					break;
+				}
 
-	temp = millis();
-	while (true)
-	{
-		while (LoRa.available() > 0 && LoRa.peek() != 'M')
-		{
-			LoRa.read();
-		}
-		if (LoRa.available() >= chgFreqVrfyLen)
-		{
+				ADDH = hexFromCharPair(tempRec + chgFreqReqHeadLen + 2 + chgFreqReqMidLen);
+				ADDL = hexFromCharPair(tempRec + chgFreqReqHeadLen + 2 + chgFreqReqMidLen + 2);
+
+#if PRINT
+				Serial.print(F("[LORA RX] Parse OK! CHAN="));
+				Serial.print(CHAN, DEC);
+				Serial.print(F(" ADDH=0x"));
+				Serial.print(ADDH, HEX);
+				Serial.print(F(" ADDL=0x"));
+				Serial.println(ADDL, HEX);
+#endif
+
+				char toSend[chgFreqCfmLen + 1] = {};
+				memcpy(toSend, chgFreqCfmHead, chgFreqCfmHeadLen);
+				toSend[chgFreqCfmHeadLen] = (CHAN / 10) + '0';
+				toSend[chgFreqCfmHeadLen + 1] = (CHAN % 10) + '0';
+				memcpy(toSend + chgFreqCfmHeadLen + 2, chgFreqCfmMid, chgFreqCfmMidLen);
+				embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen, ADDH);
+				embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 2, ADDL);
+				memcpy(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 4, chgFreqCfmTail, chgFreqCfmTailLen);
+				toSend[chgFreqCfmLen] = '\0';
+
+#if PRINT
+				Serial.print(F("[LORA RX] Enviando confirmacao: "));
+				Serial.println(toSend);
+#endif
+				delay(50);
+				while (LoRa.available() > 0 && discardLimit-- > 0) LoRa.read();
+				LoRa.println(toSend);
+
+#if PRINT
+				Serial.println(F("[LORA RX] Aguardando 1SSO_MSM do GS..."));
+#endif
+				stateTimeout = millis() + 5000;
+				hsState = HS_WAITING_1SSO;
+			} else if (millis() - startWait >= 100) {
+#if PRINT
+				Serial.print(F("[LORA RX] Bytes insuficientes ou invalido: "));
+				Serial.print(LoRa.available());
+				Serial.println(F(" / 27. Descartando 'M'"));
+#endif
+				LoRa.read();
+				hsState = HS_IDLE;
+			}
 			break;
 		}
-		if (temp + 5000 < millis())
-		{
-			Serial.println(F("[LORA RX] TIMEOUT aguardando MUD0U_MSM"));
-			return cancelLoRaConfig(true, previousConfig);
-		}
-		delay(1);
-	}
 
-	// recebe confirmação
-	count = LoRa.readBytesUntil('\n', recieved, chgFreqVrfyLen);
-	recieved[count] = '\0';
-	Serial.print(F("[LORA RX] Recebeu: "));
-	Serial.println(recieved);
-	reqCheck = true;
-	reqCheck &= (strncmp(recieved, chgFreqVrfy, chgFreqVrfyLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: MUD0U_MSM invalido")); return cancelLoRaConfig(true, previousConfig); }
+		case HS_WAITING_1SSO: {
+			if (millis() > stateTimeout) {
+#if PRINT
+				Serial.println(F("[LORA RX] TIMEOUT aguardando 1SSO_MSM"));
+#endif
+				cancelLoRaConfig(false, previousConfig);
+				hsState = HS_IDLE;
+				break;
+			}
 
-	// Responde confirmação
-	Serial.println(F("[LORA RX] Enviando JUR0_JUR4D1NH0..."));
-	LoRa.println(TX_CHG_FREQ_RESP);
+			if (LoRa.available() > 0) {
+				while (LoRa.available() > 0 && LoRa.peek() != '1' && discardLimit-- > 0) {
+					LoRa.read();
+				}
+				if (LoRa.available() >= chgFreqOkLen) {
+					uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqOkLen);
+					recieved[count] = '\0';
+#if PRINT
+					Serial.print(F("[LORA RX] Recebeu: "));
+					Serial.println(recieved);
+#endif
 
-	Serial.println(F("[LORA RX] Aguardando B04 do GS..."));
-	temp = millis();
-	while (true)
-	{
-		while (LoRa.available() > 0 && LoRa.peek() != 'B')
-		{
-			LoRa.read();
-		}
-		if (LoRa.available() >= chgFreqFinalLen)
-		{
+					if (strncmp(recieved, chgFreqOk, chgFreqOkLen) == 0) {
+						configLoRa.ADDL = ADDL;
+						configLoRa.ADDH = ADDH;
+						configLoRa.CHAN = CHAN;
+
+						if (setLoRaConfig()) {
+							saveLoRaEEConfig();
+#if PRINT
+							Serial.println(F("[LORA RX] Frequencia aplicada. Aguardando MUD0U_MSM do GS..."));
+#endif
+							stateTimeout = millis() + 5000;
+							hsState = HS_WAITING_MUD0U;
+						} else {
+							cancelLoRaConfig(true, previousConfig);
+							hsState = HS_IDLE;
+						}
+					} else {
+#if PRINT
+						Serial.println(F("[LORA RX] ERRO: 1SSO_MSM invalido"));
+#endif
+						cancelLoRaConfig(false, previousConfig);
+						hsState = HS_IDLE;
+					}
+				}
+			}
 			break;
 		}
-		if (temp + 5000 < millis())
-		{
-			Serial.println(F("[LORA RX] TIMEOUT aguardando B04"));
-			return cancelLoRaConfig(true, previousConfig);
+
+		case HS_WAITING_MUD0U: {
+			if (millis() > stateTimeout) {
+#if PRINT
+				Serial.println(F("[LORA RX] TIMEOUT aguardando MUD0U_MSM"));
+#endif
+				cancelLoRaConfig(true, previousConfig);
+				hsState = HS_IDLE;
+				break;
+			}
+
+			if (LoRa.available() > 0) {
+				while (LoRa.available() > 0 && LoRa.peek() != 'M' && discardLimit-- > 0) {
+					LoRa.read();
+				}
+				if (LoRa.available() >= chgFreqVrfyLen) {
+					uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqVrfyLen);
+					recieved[count] = '\0';
+#if PRINT
+					Serial.print(F("[LORA RX] Recebeu: "));
+					Serial.println(recieved);
+#endif
+
+					if (strncmp(recieved, chgFreqVrfy, chgFreqVrfyLen) == 0) {
+#if PRINT
+						Serial.println(F("[LORA RX] Enviando JUR0_JUR4D1NH0..."));
+#endif
+						LoRa.println(TX_CHG_FREQ_RESP);
+#if PRINT
+						Serial.println(F("[LORA RX] Aguardando B04 do GS..."));
+#endif
+						stateTimeout = millis() + 5000;
+						hsState = HS_WAITING_B04;
+					} else {
+#if PRINT
+						Serial.println(F("[LORA RX] ERRO: MUD0U_MSM invalido"));
+#endif
+						cancelLoRaConfig(true, previousConfig);
+						hsState = HS_IDLE;
+					}
+				}
+			}
+			break;
 		}
-		delay(1);
+
+		case HS_WAITING_B04: {
+			if (millis() > stateTimeout) {
+#if PRINT
+				Serial.println(F("[LORA RX] TIMEOUT aguardando B04"));
+#endif
+				cancelLoRaConfig(true, previousConfig);
+				hsState = HS_IDLE;
+				break;
+			}
+
+			if (LoRa.available() > 0) {
+				while (LoRa.available() > 0 && LoRa.peek() != 'B' && discardLimit-- > 0) {
+					LoRa.read();
+				}
+				if (LoRa.available() >= chgFreqFinalLen) {
+					uint8_t count = LoRa.readBytesUntil('\n', recieved, chgFreqFinalLen);
+					recieved[count] = '\0';
+#if PRINT
+					Serial.print(F("[LORA RX] Recebeu: "));
+					Serial.println(recieved);
+#endif
+
+					if (strncmp(recieved, chgFreqFinal, chgFreqFinalLen) == 0) {
+#if PRINT
+						Serial.println(F("[LORA RX] Mudanca de frequencia concluida com sucesso!"));
+#endif
+					} else {
+#if PRINT
+						Serial.println(F("[LORA RX] ERRO: B04 invalido"));
+#endif
+						cancelLoRaConfig(true, previousConfig);
+					}
+					hsState = HS_IDLE;
+				}
+			}
+			break;
+		}
 	}
-
-	// recebe confirmação
-	count = LoRa.readBytesUntil('\n', recieved, chgFreqFinalLen);
-	recieved[count] = '\0';
-	Serial.print(F("[LORA RX] Recebeu: "));
-	Serial.println(recieved);
-	reqCheck = true;
-	reqCheck &= (strncmp(recieved, chgFreqFinal, chgFreqFinalLen) == 0);
-	if(!reqCheck) { Serial.println(F("[LORA RX] ERRO: B04 invalido")); return cancelLoRaConfig(true, previousConfig); }
-
-	Serial.println(F("[LORA RX] Mudanca de frequencia concluida com sucesso!"));
-
 }
 
 
@@ -1748,6 +1788,9 @@ inline void RemoveBefore()
 		}
 		else if (rbfHelper.eachT(2)) rbfHelper.oneTimeReset();
 #if LoRamode
+#if USE_LoRa_E32_settable
+		updateLoRaFrequency();
+#endif // USE_LoRa_E32_settable
 		LoRaSend();
 #endif // LoRamode
 
@@ -2332,6 +2375,21 @@ inline void LoRaSend()
 	*/
 	if (LRutil.eachT(LoRaDelay))
 	{
+		struct StringPrinter : public Print {
+			String data = "";
+			size_t write(uint8_t c) override {
+				data += (char)c;
+				return 1;
+			}
+			size_t write(const uint8_t *buffer, size_t size) override {
+				for (size_t i = 0; i < size; i++) {
+					data += (char)buffer[i];
+				}
+				return size;
+			}
+		} tempPrinter;
+		Print& LoRa = tempPrinter;
+
 		LoRa.println();
 #if USE_LoRa_KEYVALUE
 		LoRa.print(F(LoRa_KEY_LINE)); // >>L<<ine
@@ -2558,6 +2616,15 @@ inline void LoRaSend()
 		LoRa.print(baro.getTemperature());
 		LoRa.print('\t');
 #endif // USE_BARO
+
+		String hexString = "";
+		hexString.reserve(tempPrinter.data.length() * 2);
+		for (unsigned int i = 0; i < tempPrinter.data.length(); i++) {
+			char hex[3];
+			sprintf(hex, "%02X", (uint8_t)tempPrinter.data[i]);
+			hexString += hex;
+		}
+		::LoRa.println(hexString);
   }
 }
 #endif // LoRamode
