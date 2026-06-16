@@ -50,7 +50,7 @@
 #define GPSmode (1)							//Use GPS
 #define LoRamode (1)						//Serial mode for transmission on LoRa module
 #define TalkingBoard (0)					//When two boards are connected for redundancy system
-#define BuZZ (0)							//Buzzer mode
+#define BuZZ (1)								//Buzzer mode
 #define ForceSysC (0)
 
 #define PRINT (1)							//Print or not things on Serial
@@ -553,14 +553,15 @@ void loadLoRaDefaultConfig()
 bool setLoRaConfig()
 {
 	ResponseStructContainer c = LoRaConfig.getConfiguration();
-	// It's important get configuration pointer before all other operation
-	Configuration configuration = *(Configuration*)c.data;
 #if PRINT
 	Serial.println(c.status.getResponseDescription());
 	Serial.println(c.status.code);
 #endif
 
 	if(c.status.code != E32_SUCCESS) return false;
+
+	// It's important get configuration pointer before all other operation
+	Configuration configuration = *(Configuration*)c.data;
 
 	//   printParameters(configuration);
 	configuration.ADDL = configLoRa.ADDL;
@@ -740,6 +741,7 @@ enum HandshakeState {
 
 void updateLoRaFrequency(){
 	static HandshakeState hsState = HS_IDLE;
+	HandshakeState oldState = hsState;
 	static unsigned long stateTimeout = 0;
 	static unsigned long startWait = 0;
 	static Configuration previousConfig;
@@ -770,9 +772,9 @@ void updateLoRaFrequency(){
 				uint8_t count = LoRa.readBytesUntil('\n', tempRec, chgFreqReqLen);
 				tempRec[count] = '\0';
 				
-				// Pause telemetry for 15s
+				// Pause telemetry for 6s
 				extern unsigned long pauseTelemetryUntil;
-				pauseTelemetryUntil = millis() + 15000;
+				pauseTelemetryUntil = millis() + 6000;
 
 #if PRINT
 				Serial.println(F("\n========== [LORA RX] =========="));
@@ -804,7 +806,7 @@ void updateLoRaFrequency(){
 					break;
 				}
 
-				CHAN = (tempRec[chgFreqReqHeadLen] - '0') * 10 + (tempRec[chgFreqReqHeadLen + 1] - '0');
+				CHAN = hexFromCharPair(tempRec + chgFreqReqHeadLen);
 				if (CHAN > 69) {
 #if PRINT
 					Serial.println(F("[LORA RX] ERRO: Canal invalido"));
@@ -828,8 +830,7 @@ void updateLoRaFrequency(){
 
 				char toSend[chgFreqCfmLen + 1] = {};
 				memcpy(toSend, chgFreqCfmHead, chgFreqCfmHeadLen);
-				toSend[chgFreqCfmHeadLen] = (CHAN / 10) + '0';
-				toSend[chgFreqCfmHeadLen + 1] = (CHAN % 10) + '0';
+				embedHexByte(toSend + chgFreqCfmHeadLen, CHAN);
 				memcpy(toSend + chgFreqCfmHeadLen + 2, chgFreqCfmMid, chgFreqCfmMidLen);
 				embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen, ADDH);
 				embedHexByte(toSend + chgFreqCfmHeadLen + 2 + chgFreqCfmMidLen + 2, ADDL);
@@ -840,7 +841,7 @@ void updateLoRaFrequency(){
 				Serial.print(F("[LORA RX] Enviando confirmacao: "));
 				Serial.println(toSend);
 #endif
-				delay(50);
+				delay(900);
 				while (LoRa.available() > 0 && discardLimit-- > 0) LoRa.read();
 				LoRa.println(toSend);
 
@@ -992,6 +993,11 @@ void updateLoRaFrequency(){
 			}
 			break;
 		}
+	}
+
+	if (oldState != HS_IDLE && hsState == HS_IDLE) {
+		extern unsigned long pauseTelemetryUntil;
+		pauseTelemetryUntil = 0;
 	}
 }
 
@@ -2389,21 +2395,6 @@ inline void LoRaSend()
 	*/
 	if (LRutil.eachT(LoRaDelay))
 	{
-		struct StringPrinter : public Print {
-			String data = "";
-			size_t write(uint8_t c) override {
-				data += (char)c;
-				return 1;
-			}
-			size_t write(const uint8_t *buffer, size_t size) override {
-				for (size_t i = 0; i < size; i++) {
-					data += (char)buffer[i];
-				}
-				return size;
-			}
-		} tempPrinter;
-		Print& LoRa = tempPrinter;
-
 		LoRa.println();
 #if USE_LoRa_KEYVALUE
 		LoRa.print(F(LoRa_KEY_LINE)); // >>L<<ine
@@ -2630,15 +2621,6 @@ inline void LoRaSend()
 		LoRa.print(baro.getTemperature());
 		LoRa.print('\t');
 #endif // USE_BARO
-
-		String hexString = "";
-		hexString.reserve(tempPrinter.data.length() * 2);
-		for (unsigned int i = 0; i < tempPrinter.data.length(); i++) {
-			char hex[3];
-			sprintf(hex, "%02X", (uint8_t)tempPrinter.data[i]);
-			hexString += hex;
-		}
-		::LoRa.println(hexString);
   }
 }
 #endif // LoRamode
