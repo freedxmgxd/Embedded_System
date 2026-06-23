@@ -11,6 +11,7 @@
 #include "WProgram.h"
 #endif
 
+
 /// Sensor base class
 class Sens
 {

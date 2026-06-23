@@ -47,6 +47,7 @@ void BMP388::begin() {
 }
 
 bool BMP388::readAll() {
+  thisReadT = micros();
   unsigned long now = micros();
   Wire.beginTransmission(address);
   state = (Wire.endTransmission() == 0);
@@ -73,6 +74,7 @@ bool BMP388::readAll() {
     pascal = (float)compensate_P(p_raw);
     lastWorkT = now;
   }
+  lastReadT = thisReadT;
   return state;
 }
 

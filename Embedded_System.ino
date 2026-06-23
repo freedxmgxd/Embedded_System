@@ -44,7 +44,7 @@
 
 #define USE_GY80 (0)						//Use GY80 module
 #define USE_GY91 (0)						//Use GY91 module
-#define USE_GY912 (1)						//Use GY912 module
+#define USE_GY912 (1)   					//Use GY912 module
 
 #define SDCard (1)							//Use SD card
 #define GPSmode (1)							//Use GPS
@@ -68,10 +68,10 @@
 #define USE_AK8963 (USE_GY91 || 0)			//Use AK8963 sensor
 
 /**************************** GY912 ***************************/
-#define USE_BMP388 (USE_GY912 || 1)			//Use BMP280 sensor
-#define USE_ICM20948_ACCEL (USE_GY912 || 1)	//Use ICM20948 sensor, accelerometer
-#define USE_ICM20948_GYRO (USE_GY912 || 1)	//Use ICM20948 sensor, gyroscope
-#define USE_AK09916 (USE_GY912 || 1)		//Use AK09916 sensor
+#define USE_BMP388 (USE_GY912 || 0)			//Use BMP280 sensor
+#define USE_ICM20948_ACCEL (USE_GY912 || 0)	//Use ICM20948 sensor, accelerometer
+#define USE_ICM20948_GYRO (USE_GY912 || 0)	//Use ICM20948 sensor, gyroscope
+#define USE_AK09916 (USE_GY912 || 0)		//Use AK09916 sensor
 
 /************************** 9DoF IMU **************************/
 #define USE_BARO (USE_BMP085 || USE_BMP280 || USE_BMP388)				// Use any Barometer
